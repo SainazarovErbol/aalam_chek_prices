@@ -18,22 +18,40 @@ _cache: dict = {}
 _last_loaded: datetime | None = None
 
 
+def _load_credentials(scopes: list) -> Credentials:
+    """
+    Загружает credentials из переменных окружения или файла.
+    Railway: GOOGLE_CREDENTIALS_JSON
+    Локально: credentials.json или GOOGLE_CREDENTIALS_FILE
+    """
+    json_str = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+    if json_str:
+        info = json.loads(json_str)
+        return Credentials.from_service_account_info(info, scopes=scopes)
+
+    creds_path = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json").strip()
+
+    # Частая ошибка: JSON вставили в GOOGLE_CREDENTIALS_FILE вместо GOOGLE_CREDENTIALS_JSON
+    if creds_path.startswith("{"):
+        info = json.loads(creds_path)
+        return Credentials.from_service_account_info(info, scopes=scopes)
+
+    if not os.path.exists(creds_path):
+        raise FileNotFoundError(
+            f"Файл {creds_path!r} не найден. "
+            "На Railway задай переменную GOOGLE_CREDENTIALS_JSON (не GOOGLE_CREDENTIALS_FILE)."
+        )
+
+    return Credentials.from_service_account_file(creds_path, scopes=scopes)
+
+
 def _get_client() -> gspread.Client:
     """
     Создаёт клиент Google Sheets.
     Сначала пробует переменную окружения GOOGLE_CREDENTIALS_JSON (для Railway),
     затем файл credentials.json (для локального запуска).
     """
-    scopes = SCOPES
-
-    json_str = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
-    if json_str:
-        info = json.loads(json_str)
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-    else:
-        creds_path = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
-        creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
-
+    creds = _load_credentials(SCOPES)
     return gspread.authorize(creds)
 
 
@@ -146,7 +164,7 @@ def find_price(barcode: str) -> str:
 
     if price is not None:
         price_str = f"{price:,.2f}".replace(",", " ").replace(".", ",")
-        price_line = f"💰 Цена: <b>{price_str} сум</b>"
+        price_line = f"💰 Цена: <b>{price_str} сом</b>"
         if unit:
             price_line += f" / {unit}"
     else:
