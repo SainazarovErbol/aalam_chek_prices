@@ -9,8 +9,7 @@ from google.oauth2.service_account import Credentials
 logger = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 # Кэш: { штрихкод: { name, price, unit, department } }
@@ -45,14 +44,14 @@ def _load_credentials(scopes: list) -> Credentials:
     return Credentials.from_service_account_file(creds_path, scopes=scopes)
 
 
-def _get_client() -> gspread.Client:
-    """
-    Создаёт клиент Google Sheets.
-    Сначала пробует переменную окружения GOOGLE_CREDENTIALS_JSON (для Railway),
-    затем файл credentials.json (для локального запуска).
-    """
+def get_sheets_client() -> gspread.Client:
+    """Клиент Google Sheets (используется также в access.py)."""
     creds = _load_credentials(SCOPES)
     return gspread.authorize(creds)
+
+
+def _get_client() -> gspread.Client:
+    return get_sheets_client()
 
 
 def _parse_price(raw: str) -> float | None:
@@ -86,6 +85,11 @@ def load_all_sheets() -> int:
 
     for worksheet in spreadsheet.worksheets():
         department = worksheet.title
+
+        # Лист «Доступ» — только пользователи, не товары
+        if department.strip().lower() in ("доступ", "access", "users"):
+            continue
+
         try:
             records = worksheet.get_all_records(numericise_ignore=["all"])
         except Exception as e:

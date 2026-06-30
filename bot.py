@@ -18,6 +18,7 @@ from aiogram.types import (
 )
 
 from prices import find_price, get_stats, load_all_sheets
+from access import is_allowed, is_admin, load_allowed_users, list_users_text, add_user, remove_user
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,16 +32,12 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN в файле .env")
+    raise RuntimeError(
+        "Не задан BOT_TOKEN. "
+        "Локально: добавь в .env | Railway: Variables → BOT_TOKEN"
+    )
 
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
-
-ALLOWED_USERS_RAW = os.getenv("ALLOWED_USER_IDS", "")
-ALLOWED_USERS: set[int] = (
-    {int(uid.strip()) for uid in ALLOWED_USERS_RAW.split(",") if uid.strip()}
-    if ALLOWED_USERS_RAW.strip()
-    else set()
-)
 
 REFRESH_INTERVAL_MIN = int(os.getenv("REFRESH_INTERVAL_MIN", "30"))
 
@@ -49,12 +46,6 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-
-
-def is_allowed(user_id: int) -> bool:
-    if not ALLOWED_USERS:
-        return True
-    return user_id in ALLOWED_USERS
 
 
 def main_keyboard() -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
@@ -75,6 +66,7 @@ async def auto_refresh_loop() -> None:
     while True:
         await asyncio.sleep(REFRESH_INTERVAL_MIN * 60)
         logger.info("Автообновление данных из Google Sheets...")
+        load_allowed_users()
         count = load_all_sheets()
         logger.info("Автообновление: %d позиций", count)
 
@@ -99,7 +91,14 @@ async def cmd_start(message: types.Message) -> None:
         "📋 <b>Команды:</b>\n"
         "/stats — статистика по отделам\n"
         "/reload — обновить данные из таблицы\n"
-        "/help — помощь",
+        "/help — помощь"
+        + (
+            "\n\n🔑 <b>Админ:</b>\n"
+            "/users — список доступа\n"
+            "/adduser ID Имя — добавить\n"
+            "/removeuser ID — удалить"
+            if is_admin(message.from_user.id) else ""
+        ),
         reply_markup=main_keyboard(),
     )
 
@@ -129,6 +128,7 @@ async def cmd_reload(message: types.Message) -> None:
     if not is_allowed(message.from_user.id):
         return
     await message.answer("🔄 Обновляю данные из Google Таблицы...")
+    load_allowed_users()
     count = load_all_sheets()
     if count > 0:
         await message.answer(f"✅ Загружено <b>{count}</b> позиций.\n\n{get_stats()}")
@@ -137,6 +137,62 @@ async def cmd_reload(message: types.Message) -> None:
             "⚠️ Не удалось загрузить данные.\n"
             "Проверь SPREADSHEET_ID и доступ к таблице."
         )
+
+
+# ── Админ: управление доступом ─────────────────────────────────────────────────
+
+@dp.message(Command("users"))
+async def cmd_users(message: types.Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Только для администратора.")
+        return
+    await message.answer(list_users_text())
+
+
+@dp.message(Command("adduser"))
+async def cmd_adduser(message: types.Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Только для администратора.")
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer(
+            "Формат: <code>/adduser 123456789 Имя</code>\n"
+            "ID узнать у @userinfobot"
+        )
+        return
+
+    user_id = int(parts[1])
+    name = parts[2].strip() if len(parts) > 2 else ""
+
+    try:
+        result = add_user(user_id, name)
+        await message.answer(result)
+    except Exception as e:
+        logger.exception("adduser failed")
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+@dp.message(Command("removeuser"))
+async def cmd_removeuser(message: types.Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Только для администратора.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Формат: <code>/removeuser 123456789</code>")
+        return
+
+    user_id = int(parts[1].strip())
+
+    try:
+        result = remove_user(user_id)
+        await message.answer(result)
+    except Exception as e:
+        logger.exception("removeuser failed")
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # ── Данные из Mini App (сканер) ────────────────────────────────────────────────
@@ -186,7 +242,9 @@ async def handle_barcode(message: types.Message) -> None:
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    logger.info("Загружаю данные из Google Sheets...")
+    logger.info("Загружаю пользователей и данные из Google Sheets...")
+    users_count = load_allowed_users()
+    logger.info("Пользователей с доступом: %d", users_count)
     count = load_all_sheets()
     logger.info("Загружено %d позиций.", count)
 
